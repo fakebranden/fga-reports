@@ -351,6 +351,7 @@ export default function ReportEditor() {
 
       if (data.html) {
         pushHistory();
+        // Insert the new HTML, then re-inject the full document to sync editability
         const doc = iframeRef.current?.contentDocument;
         if (doc) {
           const container = doc.querySelector("body > div") || doc.body;
@@ -362,9 +363,11 @@ export default function ReportEditor() {
             if (footer) container.insertBefore(el, footer);
             else container.appendChild(el);
           });
-          htmlRef.current = getCurrentHtml();
+          // Capture the full HTML with new content, then re-inject to apply editability
+          const updatedHtml = getCurrentHtml();
+          htmlRef.current = updatedHtml;
+          injectHtml(updatedHtml, mode === "edit");
           setDirtyFlag((n) => n + 1);
-          parseSections();
         }
         setStatus("Analysis complete! Content added.");
         setTimeout(() => setStatus(""), 3000);
