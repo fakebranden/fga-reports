@@ -351,24 +351,27 @@ export default function ReportEditor() {
 
       if (data.html) {
         pushHistory();
-        // Insert the new HTML, then re-inject the full document to sync editability
-        const doc = iframeRef.current?.contentDocument;
-        if (doc) {
-          const container = doc.querySelector("body > div") || doc.body;
-          const footer = container.querySelector('div[style*="1a2332"]:last-of-type');
-          const tempDiv = doc.createElement("div");
-          tempDiv.innerHTML = data.html;
-          const newElements = Array.from(tempDiv.children) as HTMLElement[];
-          newElements.forEach((el) => {
-            if (footer) container.insertBefore(el, footer);
-            else container.appendChild(el);
-          });
-          // Capture the full HTML with new content, then re-inject to apply editability
-          const updatedHtml = getCurrentHtml();
-          htmlRef.current = updatedHtml;
-          injectHtml(updatedHtml, mode === "edit");
-          setDirtyFlag((n) => n + 1);
+        // Merge the analysis HTML directly into htmlRef, then re-inject
+        const currentHtml = htmlRef.current;
+        // Insert before the last dark footer section
+        const footerMatch = currentHtml.lastIndexOf('background:#1a2332');
+        let mergedHtml: string;
+        if (footerMatch > 0) {
+          // Find the opening <div of the footer section
+          const divStart = currentHtml.lastIndexOf('<div', footerMatch);
+          mergedHtml = currentHtml.substring(0, divStart) + data.html + currentHtml.substring(divStart);
+        } else {
+          // No footer found, append before </div></body>
+          const bodyClose = currentHtml.lastIndexOf('</div></body>');
+          if (bodyClose > 0) {
+            mergedHtml = currentHtml.substring(0, bodyClose) + data.html + currentHtml.substring(bodyClose);
+          } else {
+            mergedHtml = currentHtml + data.html;
+          }
         }
+        htmlRef.current = mergedHtml;
+        injectHtml(mergedHtml, mode === "edit");
+        setDirtyFlag((n) => n + 1);
         setStatus("Analysis complete! Content added.");
         setTimeout(() => setStatus(""), 3000);
       }
