@@ -8,8 +8,9 @@ export default function ReportEditor() {
   const router = useRouter();
   const id = params.id as string;
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const htmlRef = useRef(""); // Track current HTML without re-renders
+  const loadedRef = useRef(false);
 
-  const [html, setHtml] = useState("");
   const [originalHtml, setOriginalHtml] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [subject, setSubject] = useState("");
@@ -22,6 +23,7 @@ export default function ReportEditor() {
   const [showSendPanel, setShowSendPanel] = useState(false);
   const [status, setStatus] = useState("");
   const [metadata, setMetadata] = useState<Record<string, string>>({});
+  const [, setDirtyFlag] = useState(0); // Force re-render for hasChanges check
 
   // Load report
   useEffect(() => {
@@ -29,7 +31,7 @@ export default function ReportEditor() {
       .then((r) => r.json())
       .then((d) => {
         if (d.html) {
-          setHtml(d.html);
+          htmlRef.current = d.html;
           setOriginalHtml(d.html);
           setHistory([d.html]);
         }
@@ -42,66 +44,91 @@ export default function ReportEditor() {
       .catch(() => setLoading(false));
   }, [id]);
 
-  // Inject HTML into iframe with editable markers
-  useEffect(() => {
-    if (!iframeRef.current || !html) return;
-    const doc = iframeRef.current.contentDocument;
+  // Read current HTML from iframe (for save/send/undo)
+  const getCurrentHtml = useCallback(() => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return htmlRef.current;
+    // Strip contenteditable attributes before extracting
+    const clone = doc.documentElement.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll("[contenteditable]").forEach((el) => {
+      el.removeAttribute("contenteditable");
+    });
+    // Remove the injected style tag
+    clone.querySelectorAll("style[data-editor]").forEach((el) => el.remove());
+    return "<!DOCTYPE html><html>" + clone.innerHTML + "</html>";
+  }, []);
+
+  // Inject HTML into iframe — ONLY on initial load or mode change
+  const injectHtml = useCallback((htmlContent: string, editable: boolean) => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const doc = iframe.contentDocument;
     if (!doc) return;
 
-    if (mode === "edit") {
-      // Make text elements editable
-      const editableHtml = html.replace(
-        /(<(?:div|p|span|h[1-6]|li|td|th|strong|em|a)[^>]*)(>)/gi,
-        '$1 contenteditable="true" style="cursor:text;"$2'
+    doc.open();
+    if (editable) {
+      const editableHtml = htmlContent.replace(
+        /(<(?:div|p|span|h[1-6]|li|td|th|strong|em|a)(?:\s[^>]*)?)>/gi,
+        '$1 contenteditable="true">'
       );
-      doc.open();
-      doc.write(`
-        <style>
-          [contenteditable="true"]:hover { outline: 2px dashed #FEFE04; outline-offset: 2px; }
+      doc.write(
+        `<style data-editor>
+          [contenteditable="true"]:hover { outline: 2px dashed #FEFE04; outline-offset: 2px; cursor: text; }
           [contenteditable="true"]:focus { outline: 2px solid #FF0100; outline-offset: 2px; background: rgba(255,1,0,0.03); }
           body { margin: 0; }
-        </style>
-        ${editableHtml}
-      `);
-      doc.close();
-
-      // Listen for edits
-      doc.addEventListener("input", () => {
-        const newHtml = doc.documentElement.outerHTML
-          .replace(/ contenteditable="true"/g, "")
-          .replace(/ style="cursor:text;"/g, "");
-        setHtml(newHtml);
-      });
+        </style>` + editableHtml
+      );
     } else {
-      doc.open();
-      doc.write(html);
-      doc.close();
+      doc.write(htmlContent);
     }
-  }, [html, mode]);
+    doc.close();
+
+    if (editable) {
+      // Track edits via ref (no re-render, no cursor jump)
+      doc.addEventListener("input", () => {
+        htmlRef.current = getCurrentHtml();
+        setDirtyFlag((n) => n + 1); // Trigger re-render for Save button state
+      });
+    }
+  }, [getCurrentHtml]);
+
+  // Inject on load + mode switch
+  useEffect(() => {
+    if (!htmlRef.current || loading) return;
+    if (!loadedRef.current || mode) {
+      injectHtml(htmlRef.current, mode === "edit");
+      loadedRef.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, mode]);
 
   const pushHistory = useCallback(() => {
-    setHistory((prev) => [...prev, html]);
-  }, [html]);
+    const current = getCurrentHtml();
+    setHistory((prev) => [...prev, current]);
+  }, [getCurrentHtml]);
 
   const undo = useCallback(() => {
     if (history.length > 1) {
       const prev = [...history];
       prev.pop();
       setHistory(prev);
-      setHtml(prev[prev.length - 1]);
+      const restored = prev[prev.length - 1];
+      htmlRef.current = restored;
+      injectHtml(restored, mode === "edit");
     }
-  }, [history]);
+  }, [history, mode, injectHtml]);
 
   const save = async () => {
     setSaving(true);
     pushHistory();
+    const currentHtml = getCurrentHtml();
     try {
       await fetch(`/api/reports/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ html, metadata: { ...metadata, subject_line: subject } }),
+        body: JSON.stringify({ html: currentHtml, metadata: { ...metadata, subject_line: subject } }),
       });
-      setOriginalHtml(html);
+      setOriginalHtml(currentHtml);
       setStatus("Saved!");
       setTimeout(() => setStatus(""), 2000);
     } catch {
@@ -121,11 +148,12 @@ export default function ReportEditor() {
     if (!subject.trim()) { setStatus("Add a subject line"); return; }
 
     setSending(true);
+    const currentHtml = getCurrentHtml();
     try {
       const resp = await fetch("/api/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reportId: id, recipients: validRecipients, subject, html }),
+        body: JSON.stringify({ reportId: id, recipients: validRecipients, subject, html: currentHtml }),
       });
       const data = await resp.json();
       if (data.success) {
@@ -163,7 +191,7 @@ export default function ReportEditor() {
     );
   }
 
-  const hasChanges = html !== originalHtml;
+  const hasChanges = htmlRef.current !== originalHtml;
 
   return (
     <div className="min-h-screen bg-[#1a1a1a] text-[#EEEEEE] flex flex-col">
@@ -181,7 +209,7 @@ export default function ReportEditor() {
         {/* Mode toggle */}
         <div className="flex bg-[#313131] rounded-lg p-0.5">
           <button
-            onClick={() => setMode("preview")}
+            onClick={() => { if (mode === "edit") { htmlRef.current = getCurrentHtml(); } setMode("preview"); }}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${mode === "preview" ? "bg-[#FF0100] text-white" : "text-[#EEEEEE]/60 hover:text-[#EEEEEE]"}`}
           >
             <Eye size={14} /> Preview
