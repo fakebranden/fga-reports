@@ -5,7 +5,7 @@ const N8N_URL = process.env.N8N_WEBHOOK_URL || "https://adonis-revelatory-roy.ng
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   try {
-    const resp = await fetch(`${N8N_URL}/webhook/wf-13-report-api`, {
+    const resp = await fetch(`${N8N_URL}/webhook/wf-15-report-api`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get", reportId: id }),
@@ -21,7 +21,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const body = await request.json();
   try {
-    const resp = await fetch(`${N8N_URL}/webhook/wf-13-report-api`, {
+    const resp = await fetch(`${N8N_URL}/webhook/wf-15-report-api`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "save", reportId: id, html: body.html, metadata: body.metadata }),
