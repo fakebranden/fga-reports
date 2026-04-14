@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Save, Undo2, Send, Plus, Type, Eye, Pencil, Check, X, Loader2, ImagePlus, Heading, GripVertical, ChevronUp, ChevronDown, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Undo2, Send, Plus, Type, Eye, Pencil, Check, X, Loader2, ImagePlus, Heading, GripVertical, ChevronUp, ChevronDown, Trash2, FileUp, Upload } from "lucide-react";
 
 export default function ReportEditor() {
   const params = useParams();
@@ -29,6 +29,11 @@ export default function ReportEditor() {
   const [, setDirtyFlag] = useState(0);
   const [sections, setSections] = useState<{ id: string; label: string; el?: string }[]>([]);
   const [showReorder, setShowReorder] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const brandColor = metadata.brand_color || "#800020";
 
   useEffect(() => {
@@ -300,6 +305,80 @@ export default function ReportEditor() {
     parseSections();
   };
 
+  const handleFileDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const droppedFiles = Array.from(e.dataTransfer.files).filter((f) => {
+      const valid = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "text/plain", "text/csv", "application/csv"];
+      return valid.includes(f.type) && f.size <= 10 * 1024 * 1024;
+    });
+    setUploadFiles((prev) => [...prev, ...droppedFiles]);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    const selected = Array.from(e.target.files).filter((f) => f.size <= 10 * 1024 * 1024);
+    setUploadFiles((prev) => [...prev, ...selected]);
+    e.target.value = "";
+  };
+
+  const removeUploadFile = (index: number) => {
+    setUploadFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const analyzeFiles = async () => {
+    if (uploadFiles.length === 0) return;
+    setAnalyzing(true);
+    setStatus("Analyzing documents...");
+
+    try {
+      const formData = new FormData();
+      uploadFiles.forEach((f) => formData.append("files", f));
+      formData.append("reportHtml", getCurrentHtml());
+      formData.append("brandColor", brandColor);
+
+      const resp = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        setStatus("Analysis failed: " + (data.error || "unknown error"));
+        setAnalyzing(false);
+        return;
+      }
+
+      if (data.html) {
+        pushHistory();
+        const doc = iframeRef.current?.contentDocument;
+        if (doc) {
+          const container = doc.querySelector("body > div") || doc.body;
+          const footer = container.querySelector('div[style*="1a2332"]:last-of-type');
+          const tempDiv = doc.createElement("div");
+          tempDiv.innerHTML = data.html;
+          const newElements = Array.from(tempDiv.children) as HTMLElement[];
+          newElements.forEach((el) => {
+            if (footer) container.insertBefore(el, footer);
+            else container.appendChild(el);
+          });
+          htmlRef.current = getCurrentHtml();
+          setDirtyFlag((n) => n + 1);
+          parseSections();
+        }
+        setStatus("Analysis complete! Content added.");
+        setTimeout(() => setStatus(""), 3000);
+      }
+    } catch {
+      setStatus("Analysis failed");
+    }
+
+    setAnalyzing(false);
+    setShowUploadModal(false);
+    setUploadFiles([]);
+    setShowAddMenu(false);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#1a1a1a] flex items-center justify-center">
@@ -349,8 +428,11 @@ export default function ReportEditor() {
                   <button onClick={addTextBlock} className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-[#444] transition-colors">
                     <Type size={14} className="text-[#FEFE04]" /> Text Block
                   </button>
-                  <button onClick={() => setShowImageInput(!showImageInput)} className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-[#444] transition-colors rounded-b-lg">
+                  <button onClick={() => setShowImageInput(!showImageInput)} className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-[#444] transition-colors">
                     <ImagePlus size={14} className="text-green-400" /> Image
+                  </button>
+                  <button onClick={() => { setShowUploadModal(true); setShowAddMenu(false); }} className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-[#444] transition-colors rounded-b-lg border-t border-[#444]">
+                    <FileUp size={14} className="text-blue-400" /> Upload &amp; Analyze
                   </button>
                   {showImageInput && (
                     <div className="p-2 border-t border-[#444]">
@@ -418,6 +500,106 @@ export default function ReportEditor() {
                 {sending ? "Sending..." : "Send Report"}
               </button>
               <button onClick={() => setShowSendPanel(false)} className="px-4 py-2.5 text-sm text-[#EEEEEE]/60 hover:text-[#EEEEEE]">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload & Analyze Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4" onClick={() => { if (!analyzing) { setShowUploadModal(false); setUploadFiles([]); } }}>
+          <div className="bg-[#252525] rounded-xl border border-[#444] shadow-2xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#444]">
+              <div className="flex items-center gap-2">
+                <FileUp size={18} className="text-blue-400" />
+                <span className="font-semibold text-sm">Upload &amp; Analyze</span>
+              </div>
+              <button onClick={() => { if (!analyzing) { setShowUploadModal(false); setUploadFiles([]); } }} className="p-1 hover:bg-[#444] rounded transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Drop zone */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleFileDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                  dragOver ? "border-blue-400 bg-blue-400/10" : "border-[#555] hover:border-[#777]"
+                }`}
+              >
+                <Upload size={32} className="mx-auto mb-3 text-[#EEEEEE]/40" />
+                <div className="text-sm text-[#EEEEEE]/70 mb-1">Drop files here or click to browse</div>
+                <div className="text-xs text-[#EEEEEE]/40">PDF, PNG, JPG, CSV, TXT -- Max 10MB per file</div>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.png,.jpg,.jpeg,.csv,.txt,.gif,.webp"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+
+              {/* File list */}
+              {uploadFiles.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold text-[#EEEEEE]/50 uppercase tracking-wider">
+                    {uploadFiles.length} file{uploadFiles.length > 1 ? "s" : ""} selected
+                  </div>
+                  {uploadFiles.map((f, i) => (
+                    <div key={i} className="flex items-center gap-2 bg-[#313131] rounded-lg px-3 py-2 border border-[#444]">
+                      <FileUp size={14} className="text-blue-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-[#EEEEEE]/80 truncate">{f.name}</div>
+                        <div className="text-[10px] text-[#EEEEEE]/40">{(f.size / 1024).toFixed(0)} KB</div>
+                      </div>
+                      {!analyzing && (
+                        <button onClick={() => removeUploadFile(i)} className="p-1 hover:bg-[#444] rounded text-[#EEEEEE]/40 hover:text-[#FF0100]">
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Analyze button */}
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={analyzeFiles}
+                  disabled={uploadFiles.length === 0 || analyzing}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 rounded-lg text-sm font-semibold text-white hover:bg-blue-500 transition-colors disabled:opacity-40"
+                >
+                  {analyzing ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <FileUp size={16} />
+                      Analyze &amp; Insert
+                    </>
+                  )}
+                </button>
+                {!analyzing && (
+                  <button
+                    onClick={() => { setShowUploadModal(false); setUploadFiles([]); }}
+                    className="px-4 py-2.5 text-sm text-[#EEEEEE]/60 hover:text-[#EEEEEE]"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              {analyzing && (
+                <div className="text-xs text-[#EEEEEE]/50 text-center animate-pulse">
+                  Claude is analyzing your documents and writing report content...
+                </div>
+              )}
             </div>
           </div>
         </div>
