@@ -53,7 +53,10 @@ export default function ReportEditor() {
     const doc = iframeRef.current?.contentDocument;
     if (!doc) return htmlRef.current;
     const clone = doc.documentElement.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll("[contenteditable]").forEach((el) => el.removeAttribute("contenteditable"));
+    clone.querySelectorAll("[contenteditable]").forEach((el) => {
+      el.removeAttribute("contenteditable");
+      el.removeAttribute("contentEditable");
+    });
     clone.querySelectorAll("style[data-editor]").forEach((el) => el.remove());
     clone.querySelectorAll("[data-section-id]").forEach((el) => el.removeAttribute("data-section-id"));
     clone.querySelectorAll(".editor-handle").forEach((el) => el.remove());
@@ -85,23 +88,41 @@ export default function ReportEditor() {
     if (!doc) return;
 
     doc.open();
-    if (editable) {
-      const editableHtml = htmlContent.replace(
-        /(<(?:div|p|span|h[1-6]|li|td|th|strong|em|a)(?:\s[^>]*)?)>/gi,
-        '$1 contenteditable="true">'
-      );
-      doc.write(
-        `<style data-editor>
-          [contenteditable="true"]:hover { outline: 2px dashed #FEFE04; outline-offset: 2px; cursor: text; }
-          [contenteditable="true"]:focus { outline: 2px solid #FF0100; outline-offset: 2px; background: rgba(255,1,0,0.03); }
-          body { margin: 0; }
-          [data-section-id] { position: relative; }
-        </style>` + editableHtml
-      );
-    } else {
-      doc.write(htmlContent);
-    }
+    doc.write(
+      (editable
+        ? `<style data-editor>
+            [contenteditable="true"]:hover { outline: 2px dashed #FEFE04; outline-offset: 2px; cursor: text; }
+            [contenteditable="true"]:focus { outline: 2px solid #FF0100; outline-offset: 2px; background: rgba(255,1,0,0.03); }
+            body { margin: 0; }
+            [data-section-id] { position: relative; }
+          </style>`
+        : "") + htmlContent
+    );
     doc.close();
+
+    if (editable) {
+      // Make elements editable via DOM (not regex) so we can skip header/footer
+      const container = doc.querySelector("body > div");
+      if (container) {
+        const kids = Array.from(container.children) as HTMLElement[];
+        kids.forEach((section) => {
+          const bg = section.style.background || section.style.backgroundColor || "";
+          // Skip the dark header banner and footer (background #1a2332)
+          if (bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)")) return;
+          // Make direct text-containing descendants editable
+          const editables = section.querySelectorAll("div, p, span, h1, h2, h3, h4, h5, h6, li, td, th");
+          editables.forEach((el) => {
+            const elBg = (el as HTMLElement).style.background || (el as HTMLElement).style.backgroundColor || "";
+            // Skip elements inside dark sections
+            if (elBg.includes("1a2332") || elBg.includes("rgb(26, 35, 50)")) return;
+            // Only make leaf-level elements editable (elements that contain text, not just other elements)
+            if (el.children.length === 0 || el.textContent?.trim()) {
+              (el as HTMLElement).contentEditable = "true";
+            }
+          });
+        });
+      }
+    }
 
     if (editable) {
       doc.addEventListener("input", () => {
