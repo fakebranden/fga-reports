@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Save, Undo2, Send, Plus, Type, Eye, Pencil, Check, X, Loader2, ImagePlus, Heading, GripVertical, ChevronUp, ChevronDown, Trash2, FileUp, Upload } from "lucide-react";
+import { ArrowLeft, Save, Undo2, Send, Plus, Type, Eye, Pencil, Check, X, Loader2, ImagePlus, Heading, GripVertical, ChevronUp, ChevronDown, Trash2, FileUp, Upload, Download } from "lucide-react";
 
 export default function ReportEditor() {
   const params = useParams();
@@ -54,34 +54,47 @@ export default function ReportEditor() {
       .catch(() => setLoading(false));
   }, [id]);
 
-  const extractHtmlFromIframe = useCallback(() => {
+  const extractHtmlFromIframe = useCallback((): string => {
+    // Try multiple methods to read iframe content
     try {
       const iframe = iframeRef.current;
-      if (!iframe) return null;
-      const doc = iframe.contentDocument || iframe.contentWindow?.document;
-      if (!doc || !doc.documentElement) return null;
-      const clone = doc.documentElement.cloneNode(true) as HTMLElement;
-      // Strip editor artifacts
-      clone.querySelectorAll("[contenteditable]").forEach((el) => {
-        el.removeAttribute("contenteditable");
-        el.removeAttribute("contentEditable");
-      });
-      clone.querySelectorAll("style[data-editor]").forEach((el) => el.remove());
-      clone.querySelectorAll("[data-section-id]").forEach((el) => el.removeAttribute("data-section-id"));
-      clone.querySelectorAll(".editor-handle").forEach((el) => el.remove());
-      return "<!DOCTYPE html><html>" + clone.innerHTML + "</html>";
+      if (!iframe) return htmlRef.current;
+
+      // Method 1: contentDocument
+      let doc = iframe.contentDocument;
+      // Method 2: contentWindow.document
+      if (!doc) doc = iframe.contentWindow?.document || null;
+      if (!doc || !doc.body) return htmlRef.current;
+
+      // Use XMLSerializer for more reliable serialization
+      const serializer = new XMLSerializer();
+      let raw = serializer.serializeToString(doc);
+
+      // Strip editor artifacts from the serialized string
+      raw = raw.replace(/\s*contenteditable="true"/gi, "");
+      raw = raw.replace(/\s*contenteditable=""/gi, "");
+      raw = raw.replace(/\s*contentEditable="true"/gi, "");
+      raw = raw.replace(/<style[^>]*data-editor[^>]*>[\s\S]*?<\/style>/gi, "");
+      raw = raw.replace(/\s*data-section-id="[^"]*"/gi, "");
+
+      // XMLSerializer wraps in xmlns — strip it for clean HTML
+      raw = raw.replace(/\s*xmlns="[^"]*"/gi, "");
+
+      // Ensure it starts with DOCTYPE
+      if (!raw.startsWith("<!DOCTYPE")) {
+        raw = "<!DOCTYPE html>" + raw;
+      }
+
+      return raw;
     } catch {
-      return null;
+      return htmlRef.current;
     }
   }, []);
 
   const getCurrentHtml = useCallback(() => {
-    const fromIframe = extractHtmlFromIframe();
-    if (fromIframe && fromIframe.length > 100) {
-      htmlRef.current = fromIframe;
-      return fromIframe;
-    }
-    return htmlRef.current;
+    const html = extractHtmlFromIframe();
+    htmlRef.current = html;
+    return html;
   }, [extractHtmlFromIframe]);
 
   const parseSections = useCallback(() => {
@@ -498,6 +511,19 @@ export default function ReportEditor() {
         <button onClick={save} disabled={saving || !hasChanges}
           className="flex items-center gap-1.5 px-4 py-2 bg-[#313131] rounded-lg text-xs font-semibold hover:bg-[#444] transition-colors border border-[#444] disabled:opacity-30">
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
+        </button>
+        <button onClick={() => {
+          const html = extractHtmlFromIframe();
+          const blob = new Blob([html], { type: "text/html" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `${(metadata.client_name || "report").replace(/\s+/g, "-")}-${(metadata.month_label || "report").replace(/\s+/g, "-")}.html`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }}
+          className="flex items-center gap-1.5 px-3 py-2 bg-[#313131] rounded-lg text-xs font-medium hover:bg-[#444] transition-colors border border-[#444]">
+          <Download size={14} /> Download
         </button>
         <button onClick={() => setShowSendPanel(!showSendPanel)}
           className="flex items-center gap-1.5 px-4 py-2 bg-[#FF0100] rounded-lg text-xs font-semibold text-white hover:bg-[#FF0100]/80 transition-colors">
