@@ -28,6 +28,7 @@ export default function ReportEditor() {
   const [metadata, setMetadata] = useState<Record<string, string>>({});
   const [, setDirtyFlag] = useState(0);
   const [sections, setSections] = useState<{ id: string; label: string; el?: string }[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [showReorder, setShowReorder] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
@@ -115,6 +116,98 @@ export default function ReportEditor() {
     setSections(secs);
   }, []);
 
+  // Add floating control buttons to each section in the iframe
+  const addSectionControls = useCallback(() => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return;
+    const container = doc.querySelector("body > div");
+    if (!container) return;
+
+    // Remove existing controls
+    doc.querySelectorAll(".section-controls").forEach((el) => el.remove());
+
+    const kids = Array.from(container.children) as HTMLElement[];
+    const total = kids.length;
+
+    kids.forEach((section, i) => {
+      const bg = section.style.background || section.style.backgroundColor || "";
+      // Skip dark header/footer
+      if (bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)")) return;
+
+      section.style.position = "relative";
+
+      const controls = doc.createElement("div");
+      controls.className = "section-controls";
+      controls.style.cssText = "position:absolute;top:4px;right:4px;display:flex;gap:2px;opacity:0;transition:opacity 0.15s;z-index:999;";
+
+      const makeBtn = (label: string, title: string) => {
+        const btn = doc.createElement("button");
+        btn.innerHTML = label;
+        btn.title = title;
+        btn.style.cssText = "width:26px;height:26px;border:none;border-radius:4px;background:rgba(0,0,0,0.7);color:#fff;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;";
+        btn.onmouseenter = () => { btn.style.background = "rgba(255,1,0,0.9)"; };
+        btn.onmouseleave = () => { btn.style.background = "rgba(0,0,0,0.7)"; };
+        return btn;
+      };
+
+      // Up button
+      if (i > 0) {
+        const upBtn = makeBtn("&#9650;", "Move up");
+        upBtn.onclick = (e) => {
+          e.stopPropagation();
+          // Save current state to htmlRef before modifying
+          htmlRef.current = extractHtmlFromIframe();
+          const prevSibling = section.previousElementSibling;
+          if (prevSibling) {
+            container.insertBefore(section, prevSibling);
+            htmlRef.current = extractHtmlFromIframe();
+            setDirtyFlag((n) => n + 1);
+            // Rebuild controls after move
+            setTimeout(() => addSectionControls(), 50);
+          }
+        };
+        controls.appendChild(upBtn);
+      }
+
+      // Down button
+      if (i < total - 1) {
+        const downBtn = makeBtn("&#9660;", "Move down");
+        downBtn.onclick = (e) => {
+          e.stopPropagation();
+          htmlRef.current = extractHtmlFromIframe();
+          const nextSibling = section.nextElementSibling;
+          if (nextSibling && nextSibling.nextSibling) {
+            container.insertBefore(section, nextSibling.nextSibling);
+          } else {
+            container.appendChild(section);
+          }
+          htmlRef.current = extractHtmlFromIframe();
+          setDirtyFlag((n) => n + 1);
+          setTimeout(() => addSectionControls(), 50);
+        };
+        controls.appendChild(downBtn);
+      }
+
+      // Delete button
+      const delBtn = makeBtn("&#10005;", "Delete section");
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        htmlRef.current = extractHtmlFromIframe();
+        section.remove();
+        htmlRef.current = extractHtmlFromIframe();
+        setDirtyFlag((n) => n + 1);
+        setTimeout(() => addSectionControls(), 50);
+      };
+      controls.appendChild(delBtn);
+
+      section.appendChild(controls);
+
+      // Show on hover
+      section.onmouseenter = () => { controls.style.opacity = "1"; };
+      section.onmouseleave = () => { controls.style.opacity = "0"; };
+    });
+  }, [extractHtmlFromIframe]);
+
   const injectHtml = useCallback((htmlContent: string, editable: boolean) => {
     const iframe = iframeRef.current;
     if (!iframe) return;
@@ -129,43 +222,42 @@ export default function ReportEditor() {
             [contenteditable="true"]:focus { outline: 2px solid #FF0100; outline-offset: 2px; background: rgba(255,1,0,0.03); }
             body { margin: 0; }
             [data-section-id] { position: relative; }
+            .section-controls { pointer-events: auto; }
           </style>`
         : "") + htmlContent
     );
     doc.close();
 
     if (editable) {
-      // Make elements editable via DOM (not regex) so we can skip header/footer
+      // Make elements editable via DOM — skip header/footer
       const container = doc.querySelector("body > div");
       if (container) {
         const kids = Array.from(container.children) as HTMLElement[];
         kids.forEach((section) => {
           const bg = section.style.background || section.style.backgroundColor || "";
-          // Skip the dark header banner and footer (background #1a2332)
           if (bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)")) return;
-          // Make direct text-containing descendants editable
           const editables = section.querySelectorAll("div, p, span, h1, h2, h3, h4, h5, h6, li, td, th");
           editables.forEach((el) => {
             const elBg = (el as HTMLElement).style.background || (el as HTMLElement).style.backgroundColor || "";
-            // Skip elements inside dark sections
             if (elBg.includes("1a2332") || elBg.includes("rgb(26, 35, 50)")) return;
-            // Only make leaf-level elements editable (elements that contain text, not just other elements)
             if (el.children.length === 0 || el.textContent?.trim()) {
               (el as HTMLElement).contentEditable = "true";
             }
           });
         });
       }
-    }
 
-    if (editable) {
       doc.addEventListener("input", () => {
-        htmlRef.current = getCurrentHtml();
+        htmlRef.current = extractHtmlFromIframe();
         setDirtyFlag((n) => n + 1);
       });
-      setTimeout(parseSections, 100);
+
+      setTimeout(() => {
+        parseSections();
+        addSectionControls();
+      }, 100);
     }
-  }, [getCurrentHtml, parseSections]);
+  }, [extractHtmlFromIframe, parseSections, addSectionControls]);
 
   useEffect(() => {
     if (!htmlRef.current || loading) return;
@@ -193,14 +285,11 @@ export default function ReportEditor() {
   }, [history, mode, injectHtml]);
 
   const save = async () => {
-    setSaving(true);
-    // Force sync from iframe DOM before saving
-    const fromIframe = extractHtmlFromIframe();
-    if (fromIframe && fromIframe.length > 100) {
-      htmlRef.current = fromIframe;
-    }
-    const htmlToSave = htmlRef.current;
+    // Extract HTML from iframe BEFORE any state changes (re-renders can reset iframe)
+    const htmlToSave = extractHtmlFromIframe();
+    htmlRef.current = htmlToSave;
     pushHistory();
+    setSaving(true);
     try {
       const resp = await fetch(`/api/reports/${id}`, {
         method: "PUT",
@@ -230,11 +319,10 @@ export default function ReportEditor() {
     const validRecipients = recipients.filter((r) => r.includes("@"));
     if (validRecipients.length === 0) { setStatus("Add at least one email"); return; }
     if (!subject.trim()) { setStatus("Add a subject line"); return; }
+    // Extract HTML BEFORE state changes
+    const currentHtml = extractHtmlFromIframe();
+    htmlRef.current = currentHtml;
     setSending(true);
-    // Force sync from iframe
-    const fromIframe = extractHtmlFromIframe();
-    if (fromIframe && fromIframe.length > 100) htmlRef.current = fromIframe;
-    const currentHtml = htmlRef.current;
     try {
       const resp = await fetch("/api/send", {
         method: "POST",
@@ -496,11 +584,6 @@ export default function ReportEditor() {
               )}
             </div>
 
-            <button onClick={() => { setShowReorder(!showReorder); if (!showReorder) parseSections(); }}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors border ${showReorder ? "bg-[#FF0100] text-white border-[#FF0100]" : "bg-[#313131] hover:bg-[#444] border-[#444]"}`}>
-              <GripVertical size={14} /> Reorder
-            </button>
-
             <button onClick={undo} disabled={history.length <= 1}
               className="flex items-center gap-1.5 px-3 py-2 bg-[#313131] rounded-lg text-xs font-medium hover:bg-[#444] transition-colors border border-[#444] disabled:opacity-30">
               <Undo2 size={14} /> Undo
@@ -667,35 +750,6 @@ export default function ReportEditor() {
       )}
 
       <div className="flex-1 flex gap-0">
-        {/* Reorder Panel */}
-        {showReorder && mode === "edit" && (
-          <div className="w-64 shrink-0 border-r border-[#333] bg-[#252525] overflow-y-auto p-3">
-            <div className="text-xs font-semibold text-[#EEEEEE]/50 uppercase tracking-wider mb-3">Sections</div>
-            <div className="space-y-1">
-              {sections.map((s, i) => (
-                <div key={s.id} className="flex items-center gap-1 bg-[#313131] rounded-lg p-2 border border-[#444] group">
-                  <GripVertical size={12} className="text-[#EEEEEE]/20 shrink-0" />
-                  <div className="flex-1 min-w-0 text-xs text-[#EEEEEE]/70 truncate">{s.label}</div>
-                  <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => moveSection(i, "up")} disabled={i === 0}
-                      className="p-1 hover:bg-[#444] rounded disabled:opacity-20" title="Move up">
-                      <ChevronUp size={12} />
-                    </button>
-                    <button onClick={() => moveSection(i, "down")} disabled={i === sections.length - 1}
-                      className="p-1 hover:bg-[#444] rounded disabled:opacity-20" title="Move down">
-                      <ChevronDown size={12} />
-                    </button>
-                    <button onClick={() => deleteSection(i)}
-                      className="p-1 hover:bg-red-900/50 rounded text-[#EEEEEE]/40 hover:text-[#FF0100]" title="Delete">
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Report Preview/Editor */}
         <div className="flex-1 flex justify-center p-6">
           <div className="w-full max-w-[720px] bg-white rounded-xl overflow-hidden shadow-2xl">
