@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Save, Undo2, Send, Plus, Type, Eye, Pencil, Check, X, Loader2, ImagePlus, Heading, GripVertical, ChevronUp, ChevronDown, Trash2, FileUp, Upload, Download } from "lucide-react";
+import { ArrowLeft, Save, Undo2, Redo2, Send, Plus, Type, Eye, Pencil, Check, X, Loader2, ImagePlus, Heading, GripVertical, ChevronUp, ChevronDown, Trash2, FileUp, Upload, Download } from "lucide-react";
 
 export default function ReportEditor() {
   const params = useParams();
@@ -13,6 +13,7 @@ export default function ReportEditor() {
 
   const [originalHtml, setOriginalHtml] = useState("");
   const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(0);
   const [subject, setSubject] = useState("");
   const [recipients, setRecipients] = useState<string[]>([""]);
   const [loading, setLoading] = useState(true);
@@ -45,6 +46,7 @@ export default function ReportEditor() {
           htmlRef.current = d.html;
           setOriginalHtml(d.html);
           setHistory([d.html]);
+          setHistoryIndex(0);
         }
         if (d.subject_line) setSubject(d.subject_line);
         if (d.client_email) setRecipients([d.client_email]);
@@ -116,6 +118,14 @@ export default function ReportEditor() {
     setSections(secs);
   }, []);
 
+  // Helper: strip controls from DOM, extract clean HTML, then re-add controls
+  const getCleanHtml = useCallback(() => {
+    const doc = iframeRef.current?.contentDocument;
+    if (doc) doc.querySelectorAll(".section-controls").forEach((el) => el.remove());
+    const html = extractHtmlFromIframe();
+    return html;
+  }, [extractHtmlFromIframe]);
+
   // Add floating control buttons to each section in the iframe
   const addSectionControls = useCallback(() => {
     const doc = iframeRef.current?.contentDocument;
@@ -129,10 +139,26 @@ export default function ReportEditor() {
     const kids = Array.from(container.children) as HTMLElement[];
     const total = kids.length;
 
+    // Find footer indices to protect them from move-down and to skip controls
+    const footerIndices = new Set<number>();
+    kids.forEach((el, i) => {
+      const bg = el.style.background || el.style.backgroundColor || "";
+      if (bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)")) footerIndices.add(i);
+    });
+    // First editable section index (after header)
+    let firstEditable = 0;
+    for (let i = 0; i < kids.length; i++) {
+      if (!footerIndices.has(i)) { firstEditable = i; break; }
+    }
+    // Last editable section index (before footer)
+    let lastEditable = total - 1;
+    for (let i = total - 1; i >= 0; i--) {
+      if (!footerIndices.has(i)) { lastEditable = i; break; }
+    }
+
     kids.forEach((section, i) => {
-      const bg = section.style.background || section.style.backgroundColor || "";
       // Skip dark header/footer
-      if (bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)")) return;
+      if (footerIndices.has(i)) return;
 
       section.style.position = "relative";
 
@@ -150,40 +176,43 @@ export default function ReportEditor() {
         return btn;
       };
 
-      // Up button
-      if (i > 0) {
+      // Up button (not on first editable section)
+      if (i > firstEditable) {
         const upBtn = makeBtn("&#9650;", "Move up");
         upBtn.onclick = (e) => {
           e.stopPropagation();
-          // Save current state to htmlRef before modifying
-          htmlRef.current = extractHtmlFromIframe();
+          pushHistory();
           const prevSibling = section.previousElementSibling;
-          if (prevSibling) {
-            container.insertBefore(section, prevSibling);
-            htmlRef.current = extractHtmlFromIframe();
-            setDirtyFlag((n) => n + 1);
-            // Rebuild controls after move
-            setTimeout(() => addSectionControls(), 50);
-          }
+          if (prevSibling) container.insertBefore(section, prevSibling);
+          // Re-extract clean HTML and re-inject to prevent DOM corruption
+          const clean = getCleanHtml();
+          htmlRef.current = clean;
+          injectHtml(clean, true);
+          setDirtyFlag((n) => n + 1);
         };
         controls.appendChild(upBtn);
       }
 
-      // Down button
-      if (i < total - 1) {
+      // Down button (not on last editable section — don't move into footer)
+      if (i < lastEditable) {
         const downBtn = makeBtn("&#9660;", "Move down");
         downBtn.onclick = (e) => {
           e.stopPropagation();
-          htmlRef.current = extractHtmlFromIframe();
+          pushHistory();
           const nextSibling = section.nextElementSibling;
-          if (nextSibling && nextSibling.nextSibling) {
-            container.insertBefore(section, nextSibling.nextSibling);
-          } else {
-            container.appendChild(section);
+          // Don't move into footer
+          const nextBg = (nextSibling as HTMLElement)?.style?.background || "";
+          if (nextSibling && !nextBg.includes("1a2332")) {
+            if (nextSibling.nextSibling) {
+              container.insertBefore(section, nextSibling.nextSibling);
+            } else {
+              container.appendChild(section);
+            }
           }
-          htmlRef.current = extractHtmlFromIframe();
+          const clean = getCleanHtml();
+          htmlRef.current = clean;
+          injectHtml(clean, true);
           setDirtyFlag((n) => n + 1);
-          setTimeout(() => addSectionControls(), 50);
         };
         controls.appendChild(downBtn);
       }
@@ -192,11 +221,13 @@ export default function ReportEditor() {
       const delBtn = makeBtn("&#10005;", "Delete section");
       delBtn.onclick = (e) => {
         e.stopPropagation();
-        htmlRef.current = extractHtmlFromIframe();
+        pushHistory();
         section.remove();
-        htmlRef.current = extractHtmlFromIframe();
+        // Re-inject from clean HTML to prevent footer merging
+        const clean = getCleanHtml();
+        htmlRef.current = clean;
+        injectHtml(clean, true);
         setDirtyFlag((n) => n + 1);
-        setTimeout(() => addSectionControls(), 50);
       };
       controls.appendChild(delBtn);
 
@@ -269,20 +300,35 @@ export default function ReportEditor() {
   }, [loading, mode]);
 
   const pushHistory = useCallback(() => {
-    const current = getCurrentHtml();
-    setHistory((prev) => [...prev, current]);
-  }, [getCurrentHtml]);
+    const current = extractHtmlFromIframe();
+    // Truncate any redo history beyond current index
+    setHistory((prev) => {
+      const truncated = prev.slice(0, historyIndex + 1);
+      const next = [...truncated, current];
+      setHistoryIndex(next.length - 1);
+      return next;
+    });
+  }, [extractHtmlFromIframe, historyIndex]);
 
   const undo = useCallback(() => {
-    if (history.length > 1) {
-      const prev = [...history];
-      prev.pop();
-      setHistory(prev);
-      const restored = prev[prev.length - 1];
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      const restored = history[newIndex];
+      setHistoryIndex(newIndex);
       htmlRef.current = restored;
       injectHtml(restored, mode === "edit");
     }
-  }, [history, mode, injectHtml]);
+  }, [history, historyIndex, mode, injectHtml]);
+
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      const restored = history[newIndex];
+      setHistoryIndex(newIndex);
+      htmlRef.current = restored;
+      injectHtml(restored, mode === "edit");
+    }
+  }, [history, historyIndex, mode, injectHtml]);
 
   const save = async () => {
     // Extract HTML from iframe BEFORE any state changes (re-renders can reset iframe)
@@ -584,9 +630,13 @@ export default function ReportEditor() {
               )}
             </div>
 
-            <button onClick={undo} disabled={history.length <= 1}
+            <button onClick={undo} disabled={historyIndex <= 0}
               className="flex items-center gap-1.5 px-3 py-2 bg-[#313131] rounded-lg text-xs font-medium hover:bg-[#444] transition-colors border border-[#444] disabled:opacity-30">
               <Undo2 size={14} /> Undo
+            </button>
+            <button onClick={redo} disabled={historyIndex >= history.length - 1}
+              className="flex items-center gap-1.5 px-3 py-2 bg-[#313131] rounded-lg text-xs font-medium hover:bg-[#444] transition-colors border border-[#444] disabled:opacity-30">
+              <Redo2 size={14} /> Redo
             </button>
           </>
         )}
