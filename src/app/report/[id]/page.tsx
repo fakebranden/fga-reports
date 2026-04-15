@@ -245,15 +245,20 @@ export default function ReportEditor() {
 
     doc.open();
     doc.write(
-      (editable
-        ? `<style data-editor>
+      `<style data-editor>
+            /* Fix table-based layouts to stay within container */
+            table { box-sizing: border-box; max-width: 100%; }
+            td { box-sizing: border-box; }
+            img { max-width: 100%; height: auto; }
+            body { margin: 0; max-width: 680px; }
+            body > div { max-width: 680px; overflow: hidden; }
+            ${editable ? `
             [contenteditable="true"]:hover { outline: 2px dashed #FEFE04; outline-offset: 2px; cursor: text; }
             [contenteditable="true"]:focus { outline: 2px solid #FF0100; outline-offset: 2px; background: rgba(255,1,0,0.03); }
-            body { margin: 0; }
             [data-section-id] { position: relative; }
             .section-controls { pointer-events: auto; }
-          </style>`
-        : "") + htmlContent
+            ` : ''}
+          </style>` + htmlContent
     );
     doc.close();
 
