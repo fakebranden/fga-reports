@@ -392,13 +392,32 @@ export default function ReportEditor() {
   const insertBeforeFooter = (el: HTMLElement) => {
     const doc = iframeRef.current?.contentDocument;
     if (!doc) return;
-    const body = doc.querySelector("body > div") || doc.body;
-    const footer = body.querySelector('div[style*="1a2332"]:last-of-type');
-    if (footer) body.insertBefore(el, footer);
-    else body.appendChild(el);
-    htmlRef.current = getCurrentHtml();
+    const container = doc.querySelector("body > div") || doc.body;
+    // Find footer by walking backwards from the end
+    const kids = Array.from(container.children) as HTMLElement[];
+    let footerStart = kids.length;
+    for (let i = kids.length - 1; i >= 0; i--) {
+      const bg = kids[i].style.background || kids[i].style.backgroundColor || "";
+      const html = kids[i].outerHTML || "";
+      if (bg.includes("1a2332") || html.includes("1a2332") || html.includes("THANK YOU")) {
+        footerStart = i;
+      } else {
+        break;
+      }
+    }
+    // Also include closing text before footer
+    if (footerStart > 0) {
+      const prevStyle = kids[footerStart - 1]?.getAttribute("style") || "";
+      if (prevStyle.includes("padding:24px 40px")) footerStart--;
+    }
+    const insertBefore = kids[footerStart] || null;
+    if (insertBefore) container.insertBefore(el, insertBefore);
+    else container.appendChild(el);
+    // Re-inject for clean state
+    const clean = getCleanHtml();
+    htmlRef.current = clean;
+    injectHtml(clean, mode === "edit");
     setDirtyFlag((n) => n + 1);
-    parseSections();
   };
 
   const addTextBlock = () => {
@@ -527,63 +546,44 @@ export default function ReportEditor() {
 
       if (data.html) {
         pushHistory();
-        // Merge analysis HTML into report — insert before the closing/footer section
-        const currentHtml = extractHtmlFromIframe();
-
-        // Find the FIRST footer div (the "closing" text section before the dark THANK YOU footer)
-        // The report structure ends with:
-        //   <div style="padding:24px 40px;">..closing text..</div>   ← insert BEFORE this
-        //   <div style="background:#1a2332;...">THANK YOU</div>      ← dark footer
-        // </div></body></html>
-
-        // Strategy: find the last </div></body> and work backwards past the footer divs
-        let insertPos = -1;
-
-        // Find all occurrences of 'background:#1a2332' (footer sections)
-        const footerPattern = 'background:#1a2332';
-        const firstFooterIdx = currentHtml.indexOf(footerPattern);
-        if (firstFooterIdx > 0) {
-          // Find the <div that contains this background — search backwards
-          let searchPos = firstFooterIdx;
-          let depth = 0;
-          // Walk backwards to find the opening <div
-          for (let pos = searchPos; pos >= 0; pos--) {
-            if (currentHtml.substring(pos, pos + 4) === '<div') {
-              insertPos = pos;
-              break;
+        // Insert via DOM — same approach as addTextBlock, then re-inject for clean state
+        const doc = iframeRef.current?.contentDocument;
+        if (doc) {
+          const container = doc.querySelector("body > div") || doc.body;
+          // Find the LAST div with dark background (footer) — walk backwards through children
+          const kids = Array.from(container.children) as HTMLElement[];
+          let footerStart = kids.length; // default: append at end
+          for (let i = kids.length - 1; i >= 0; i--) {
+            const bg = kids[i].style.background || kids[i].style.backgroundColor || "";
+            const outerHtml = kids[i].outerHTML || "";
+            if (bg.includes("1a2332") || outerHtml.includes("1a2332") || outerHtml.includes("THANK YOU")) {
+              footerStart = i;
+            } else {
+              break; // Stop once we hit a non-footer section
             }
           }
-          // Also check for a "closing" text div right before the footer
-          // Look for padding:24px 40px right before the footer
-          if (insertPos > 0) {
-            const closingCheck = currentHtml.lastIndexOf('padding:24px 40px', insertPos);
-            if (closingCheck > 0 && insertPos - closingCheck < 500) {
-              // Find the <div for this closing section
-              for (let pos = closingCheck; pos >= 0; pos--) {
-                if (currentHtml.substring(pos, pos + 4) === '<div') {
-                  insertPos = pos;
-                  break;
-                }
-              }
+          // Also include the closing text div right before footer if it exists
+          if (footerStart > 0) {
+            const prevEl = kids[footerStart - 1];
+            const prevStyle = prevEl?.getAttribute("style") || "";
+            if (prevStyle.includes("padding:24px 40px")) {
+              footerStart = footerStart - 1;
             }
           }
+          const insertBefore = kids[footerStart] || null;
+          // Parse the new HTML and insert each element
+          const tempDiv = doc.createElement("div");
+          tempDiv.innerHTML = data.html;
+          const newEls = Array.from(tempDiv.children);
+          newEls.forEach((el) => {
+            if (insertBefore) container.insertBefore(el, insertBefore);
+            else container.appendChild(el);
+          });
         }
-
-        let mergedHtml: string;
-        if (insertPos > 0) {
-          mergedHtml = currentHtml.substring(0, insertPos) + data.html + currentHtml.substring(insertPos);
-        } else {
-          // Fallback: insert before </div></body>
-          const bodyClose = currentHtml.lastIndexOf('</div></body>');
-          if (bodyClose > 0) {
-            mergedHtml = currentHtml.substring(0, bodyClose) + data.html + currentHtml.substring(bodyClose);
-          } else {
-            mergedHtml = currentHtml + data.html;
-          }
-        }
-
-        htmlRef.current = mergedHtml;
-        injectHtml(mergedHtml, mode === "edit");
+        // Re-extract and re-inject for clean editability + controls
+        const clean = getCleanHtml();
+        htmlRef.current = clean;
+        injectHtml(clean, mode === "edit");
         setDirtyFlag((n) => n + 1);
         setStatus("Analysis complete! Content added.");
         setTimeout(() => setStatus(""), 3000);
