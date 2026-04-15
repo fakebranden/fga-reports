@@ -527,17 +527,53 @@ export default function ReportEditor() {
 
       if (data.html) {
         pushHistory();
-        // Merge the analysis HTML directly into htmlRef, then re-inject
-        const currentHtml = htmlRef.current;
-        // Insert before the last dark footer section
-        const footerMatch = currentHtml.lastIndexOf('background:#1a2332');
+        // Merge analysis HTML into report — insert before the closing/footer section
+        const currentHtml = extractHtmlFromIframe();
+
+        // Find the FIRST footer div (the "closing" text section before the dark THANK YOU footer)
+        // The report structure ends with:
+        //   <div style="padding:24px 40px;">..closing text..</div>   ← insert BEFORE this
+        //   <div style="background:#1a2332;...">THANK YOU</div>      ← dark footer
+        // </div></body></html>
+
+        // Strategy: find the last </div></body> and work backwards past the footer divs
+        let insertPos = -1;
+
+        // Find all occurrences of 'background:#1a2332' (footer sections)
+        const footerPattern = 'background:#1a2332';
+        const firstFooterIdx = currentHtml.indexOf(footerPattern);
+        if (firstFooterIdx > 0) {
+          // Find the <div that contains this background — search backwards
+          let searchPos = firstFooterIdx;
+          let depth = 0;
+          // Walk backwards to find the opening <div
+          for (let pos = searchPos; pos >= 0; pos--) {
+            if (currentHtml.substring(pos, pos + 4) === '<div') {
+              insertPos = pos;
+              break;
+            }
+          }
+          // Also check for a "closing" text div right before the footer
+          // Look for padding:24px 40px right before the footer
+          if (insertPos > 0) {
+            const closingCheck = currentHtml.lastIndexOf('padding:24px 40px', insertPos);
+            if (closingCheck > 0 && insertPos - closingCheck < 500) {
+              // Find the <div for this closing section
+              for (let pos = closingCheck; pos >= 0; pos--) {
+                if (currentHtml.substring(pos, pos + 4) === '<div') {
+                  insertPos = pos;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
         let mergedHtml: string;
-        if (footerMatch > 0) {
-          // Find the opening <div of the footer section
-          const divStart = currentHtml.lastIndexOf('<div', footerMatch);
-          mergedHtml = currentHtml.substring(0, divStart) + data.html + currentHtml.substring(divStart);
+        if (insertPos > 0) {
+          mergedHtml = currentHtml.substring(0, insertPos) + data.html + currentHtml.substring(insertPos);
         } else {
-          // No footer found, append before </div></body>
+          // Fallback: insert before </div></body>
           const bodyClose = currentHtml.lastIndexOf('</div></body>');
           if (bodyClose > 0) {
             mergedHtml = currentHtml.substring(0, bodyClose) + data.html + currentHtml.substring(bodyClose);
@@ -545,6 +581,7 @@ export default function ReportEditor() {
             mergedHtml = currentHtml + data.html;
           }
         }
+
         htmlRef.current = mergedHtml;
         injectHtml(mergedHtml, mode === "edit");
         setDirtyFlag((n) => n + 1);
