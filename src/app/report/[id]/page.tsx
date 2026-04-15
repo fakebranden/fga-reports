@@ -54,19 +54,35 @@ export default function ReportEditor() {
       .catch(() => setLoading(false));
   }, [id]);
 
-  const getCurrentHtml = useCallback(() => {
-    const doc = iframeRef.current?.contentDocument;
-    if (!doc) return htmlRef.current;
-    const clone = doc.documentElement.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll("[contenteditable]").forEach((el) => {
-      el.removeAttribute("contenteditable");
-      el.removeAttribute("contentEditable");
-    });
-    clone.querySelectorAll("style[data-editor]").forEach((el) => el.remove());
-    clone.querySelectorAll("[data-section-id]").forEach((el) => el.removeAttribute("data-section-id"));
-    clone.querySelectorAll(".editor-handle").forEach((el) => el.remove());
-    return "<!DOCTYPE html><html>" + clone.innerHTML + "</html>";
+  const extractHtmlFromIframe = useCallback(() => {
+    try {
+      const iframe = iframeRef.current;
+      if (!iframe) return null;
+      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!doc || !doc.documentElement) return null;
+      const clone = doc.documentElement.cloneNode(true) as HTMLElement;
+      // Strip editor artifacts
+      clone.querySelectorAll("[contenteditable]").forEach((el) => {
+        el.removeAttribute("contenteditable");
+        el.removeAttribute("contentEditable");
+      });
+      clone.querySelectorAll("style[data-editor]").forEach((el) => el.remove());
+      clone.querySelectorAll("[data-section-id]").forEach((el) => el.removeAttribute("data-section-id"));
+      clone.querySelectorAll(".editor-handle").forEach((el) => el.remove());
+      return "<!DOCTYPE html><html>" + clone.innerHTML + "</html>";
+    } catch {
+      return null;
+    }
   }, []);
+
+  const getCurrentHtml = useCallback(() => {
+    const fromIframe = extractHtmlFromIframe();
+    if (fromIframe && fromIframe.length > 100) {
+      htmlRef.current = fromIframe;
+      return fromIframe;
+    }
+    return htmlRef.current;
+  }, [extractHtmlFromIframe]);
 
   const parseSections = useCallback(() => {
     const doc = iframeRef.current?.contentDocument;
@@ -165,17 +181,27 @@ export default function ReportEditor() {
 
   const save = async () => {
     setSaving(true);
+    // Force sync from iframe DOM before saving
+    const fromIframe = extractHtmlFromIframe();
+    if (fromIframe && fromIframe.length > 100) {
+      htmlRef.current = fromIframe;
+    }
+    const htmlToSave = htmlRef.current;
     pushHistory();
-    const currentHtml = getCurrentHtml();
     try {
-      await fetch(`/api/reports/${id}`, {
+      const resp = await fetch(`/api/reports/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ html: currentHtml, metadata: { ...metadata, subject_line: subject } }),
+        body: JSON.stringify({ html: htmlToSave, metadata: { subject_line: subject } }),
       });
-      setOriginalHtml(currentHtml);
-      setStatus("Saved!");
-      setTimeout(() => setStatus(""), 2000);
+      const data = await resp.json();
+      if (data.success !== false) {
+        setOriginalHtml(htmlToSave);
+        setStatus(`Saved! (${Math.round(htmlToSave.length / 1024)}KB)`);
+      } else {
+        setStatus("Save failed: " + (data.error || "unknown"));
+      }
+      setTimeout(() => setStatus(""), 3000);
     } catch {
       setStatus("Save failed");
     }
@@ -192,7 +218,10 @@ export default function ReportEditor() {
     if (validRecipients.length === 0) { setStatus("Add at least one email"); return; }
     if (!subject.trim()) { setStatus("Add a subject line"); return; }
     setSending(true);
-    const currentHtml = getCurrentHtml();
+    // Force sync from iframe
+    const fromIframe = extractHtmlFromIframe();
+    if (fromIframe && fromIframe.length > 100) htmlRef.current = fromIframe;
+    const currentHtml = htmlRef.current;
     try {
       const resp = await fetch("/api/send", {
         method: "POST",
