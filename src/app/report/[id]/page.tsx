@@ -14,6 +14,7 @@ export default function ReportEditor() {
   const [originalHtml, setOriginalHtml] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  const historyIndexRef = useRef(0);
   const [subject, setSubject] = useState("");
   const [recipients, setRecipients] = useState<string[]>([""]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +48,7 @@ export default function ReportEditor() {
           setOriginalHtml(d.html);
           setHistory([d.html]);
           setHistoryIndex(0);
+          historyIndexRef.current = 0;
         }
         if (d.subject_line) setSubject(d.subject_line);
         if (d.client_email) setRecipients([d.client_email]);
@@ -126,6 +128,31 @@ export default function ReportEditor() {
     return html;
   }, [extractHtmlFromIframe]);
 
+  // Ref to hold injectHtml so section controls can call it without circular deps
+  const injectHtmlRef = useRef<(html: string, editable: boolean) => void>(() => {});
+
+  // Perform a section operation: save state, modify DOM, re-inject
+  const sectionOp = useCallback((operation: () => void) => {
+    const doc = iframeRef.current?.contentDocument;
+    if (doc) doc.querySelectorAll(".section-controls").forEach((el) => el.remove());
+    const before = extractHtmlFromIframe();
+    setHistory((prev) => {
+      const truncated = prev.slice(0, historyIndexRef.current + 1);
+      const next = [...truncated, before];
+      historyIndexRef.current = next.length - 1;
+      setHistoryIndex(next.length - 1);
+      return next;
+    });
+    operation();
+    const doc2 = iframeRef.current?.contentDocument;
+    if (doc2) doc2.querySelectorAll(".section-controls").forEach((el) => el.remove());
+    const clean = extractHtmlFromIframe();
+    htmlRef.current = clean;
+    // Use ref to avoid circular dependency
+    injectHtmlRef.current(clean, true);
+    setDirtyFlag((n) => n + 1);
+  }, [extractHtmlFromIframe]);
+
   // Add floating control buttons to each section in the iframe
   const addSectionControls = useCallback(() => {
     const doc = iframeRef.current?.contentDocument;
@@ -133,33 +160,23 @@ export default function ReportEditor() {
     const container = doc.querySelector("body > div");
     if (!container) return;
 
-    // Remove existing controls
     doc.querySelectorAll(".section-controls").forEach((el) => el.remove());
 
-    const kids = Array.from(container.children) as HTMLElement[];
-    const total = kids.length;
+    const allKids = Array.from(container.children) as HTMLElement[];
 
-    // Find footer indices to protect them from move-down and to skip controls
-    const footerIndices = new Set<number>();
-    kids.forEach((el, i) => {
+    // Classify each child as dark (header/footer) or editable
+    const isDark = (el: HTMLElement) => {
       const bg = el.style.background || el.style.backgroundColor || "";
-      if (bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)")) footerIndices.add(i);
-    });
-    // First editable section index (after header)
-    let firstEditable = 0;
-    for (let i = 0; i < kids.length; i++) {
-      if (!footerIndices.has(i)) { firstEditable = i; break; }
-    }
-    // Last editable section index (before footer)
-    let lastEditable = total - 1;
-    for (let i = total - 1; i >= 0; i--) {
-      if (!footerIndices.has(i)) { lastEditable = i; break; }
-    }
+      const html = el.outerHTML?.substring(0, 200) || "";
+      return bg.includes("1a2332") || bg.includes("rgb(26, 35, 50)") || html.includes("background:#1a2332");
+    };
 
-    kids.forEach((section, i) => {
-      // Skip dark header/footer
-      if (footerIndices.has(i)) return;
+    // Build list of editable section indices
+    const editableIndices: number[] = [];
+    allKids.forEach((el, i) => { if (!isDark(el)) editableIndices.push(i); });
 
+    editableIndices.forEach((idx, pos) => {
+      const section = allKids[idx];
       section.style.position = "relative";
 
       const controls = doc.createElement("div");
@@ -176,43 +193,32 @@ export default function ReportEditor() {
         return btn;
       };
 
-      // Up button (not on first editable section)
-      if (i > firstEditable) {
+      // Up button — swap with previous editable section
+      if (pos > 0) {
         const upBtn = makeBtn("&#9650;", "Move up");
         upBtn.onclick = (e) => {
           e.stopPropagation();
-          pushHistory();
-          const prevSibling = section.previousElementSibling;
-          if (prevSibling) container.insertBefore(section, prevSibling);
-          // Re-extract clean HTML and re-inject to prevent DOM corruption
-          const clean = getCleanHtml();
-          htmlRef.current = clean;
-          injectHtml(clean, true);
-          setDirtyFlag((n) => n + 1);
+          sectionOp(() => {
+            const prevIdx = editableIndices[pos - 1];
+            const prevEl = allKids[prevIdx];
+            container.insertBefore(section, prevEl);
+          });
         };
         controls.appendChild(upBtn);
       }
 
-      // Down button (not on last editable section — don't move into footer)
-      if (i < lastEditable) {
+      // Down button — swap with next editable section
+      if (pos < editableIndices.length - 1) {
         const downBtn = makeBtn("&#9660;", "Move down");
         downBtn.onclick = (e) => {
           e.stopPropagation();
-          pushHistory();
-          const nextSibling = section.nextElementSibling;
-          // Don't move into footer
-          const nextBg = (nextSibling as HTMLElement)?.style?.background || "";
-          if (nextSibling && !nextBg.includes("1a2332")) {
-            if (nextSibling.nextSibling) {
-              container.insertBefore(section, nextSibling.nextSibling);
-            } else {
-              container.appendChild(section);
-            }
-          }
-          const clean = getCleanHtml();
-          htmlRef.current = clean;
-          injectHtml(clean, true);
-          setDirtyFlag((n) => n + 1);
+          sectionOp(() => {
+            const nextIdx = editableIndices[pos + 1];
+            const nextEl = allKids[nextIdx];
+            // Insert after nextEl
+            if (nextEl.nextSibling) container.insertBefore(section, nextEl.nextSibling);
+            else container.appendChild(section);
+          });
         };
         controls.appendChild(downBtn);
       }
@@ -221,23 +227,15 @@ export default function ReportEditor() {
       const delBtn = makeBtn("&#10005;", "Delete section");
       delBtn.onclick = (e) => {
         e.stopPropagation();
-        pushHistory();
-        section.remove();
-        // Re-inject from clean HTML to prevent footer merging
-        const clean = getCleanHtml();
-        htmlRef.current = clean;
-        injectHtml(clean, true);
-        setDirtyFlag((n) => n + 1);
+        sectionOp(() => { section.remove(); });
       };
       controls.appendChild(delBtn);
 
       section.appendChild(controls);
-
-      // Show on hover
       section.onmouseenter = () => { controls.style.opacity = "1"; };
       section.onmouseleave = () => { controls.style.opacity = "0"; };
     });
-  }, [extractHtmlFromIframe]);
+  }, [extractHtmlFromIframe, sectionOp]);
 
   const injectHtml = useCallback((htmlContent: string, editable: boolean) => {
     const iframe = iframeRef.current;
@@ -290,6 +288,9 @@ export default function ReportEditor() {
     }
   }, [extractHtmlFromIframe, parseSections, addSectionControls]);
 
+  // Keep the ref in sync
+  injectHtmlRef.current = injectHtml;
+
   useEffect(() => {
     if (!htmlRef.current || loading) return;
     if (!loadedRef.current || mode) {
@@ -301,34 +302,46 @@ export default function ReportEditor() {
 
   const pushHistory = useCallback(() => {
     const current = extractHtmlFromIframe();
-    // Truncate any redo history beyond current index
     setHistory((prev) => {
-      const truncated = prev.slice(0, historyIndex + 1);
+      const truncated = prev.slice(0, historyIndexRef.current + 1);
       const next = [...truncated, current];
+      historyIndexRef.current = next.length - 1;
       setHistoryIndex(next.length - 1);
       return next;
     });
-  }, [extractHtmlFromIframe, historyIndex]);
+  }, [extractHtmlFromIframe]);
 
   const undo = useCallback(() => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1;
-      const restored = history[newIndex];
-      setHistoryIndex(newIndex);
-      htmlRef.current = restored;
-      injectHtml(restored, mode === "edit");
+    if (historyIndexRef.current > 0) {
+      setHistory((prev) => {
+        const newIndex = historyIndexRef.current - 1;
+        const restored = prev[newIndex];
+        if (restored) {
+          historyIndexRef.current = newIndex;
+          setHistoryIndex(newIndex);
+          htmlRef.current = restored;
+          injectHtml(restored, mode === "edit");
+        }
+        return prev;
+      });
     }
-  }, [history, historyIndex, mode, injectHtml]);
+  }, [mode, injectHtml]);
 
   const redo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1;
-      const restored = history[newIndex];
-      setHistoryIndex(newIndex);
-      htmlRef.current = restored;
-      injectHtml(restored, mode === "edit");
-    }
-  }, [history, historyIndex, mode, injectHtml]);
+    setHistory((prev) => {
+      if (historyIndexRef.current < prev.length - 1) {
+        const newIndex = historyIndexRef.current + 1;
+        const restored = prev[newIndex];
+        if (restored) {
+          historyIndexRef.current = newIndex;
+          setHistoryIndex(newIndex);
+          htmlRef.current = restored;
+          injectHtml(restored, mode === "edit");
+        }
+      }
+      return prev;
+    });
+  }, [mode, injectHtml]);
 
   const save = async () => {
     // Extract HTML from iframe BEFORE any state changes (re-renders can reset iframe)
@@ -682,18 +695,42 @@ export default function ReportEditor() {
           className="flex items-center gap-1.5 px-4 py-2 bg-[#313131] rounded-lg text-xs font-semibold hover:bg-[#444] transition-colors border border-[#444] disabled:opacity-30">
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
         </button>
-        <button onClick={() => {
-          const html = extractHtmlFromIframe();
-          const blob = new Blob([html], { type: "text/html" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `${(metadata.client_name || "report").replace(/\s+/g, "-")}-${(metadata.month_label || "report").replace(/\s+/g, "-")}.html`;
-          a.click();
-          URL.revokeObjectURL(url);
+        <button onClick={async () => {
+          setStatus("Generating PDF...");
+          try {
+            // Create a hidden iframe for clean rendering
+            const printFrame = document.createElement("iframe");
+            printFrame.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:680px;height:900px;";
+            document.body.appendChild(printFrame);
+            const printDoc = printFrame.contentDocument;
+            if (printDoc) {
+              const html = extractHtmlFromIframe();
+              printDoc.open();
+              printDoc.write(html);
+              printDoc.close();
+              // Wait for images to load
+              await new Promise((r) => setTimeout(r, 1000));
+              const { default: html2canvas } = await import("html2canvas");
+              const { jsPDF } = await import("jspdf");
+              const target = printDoc.querySelector("body > div") as HTMLElement || printDoc.body;
+              const canvas = await html2canvas(target, { scale: 2, useCORS: true, logging: false, windowWidth: 680 });
+              const imgData = canvas.toDataURL("image/jpeg", 0.95);
+              const pdfWidth = 210; // A4 mm
+              const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+              const pdf = new jsPDF({ unit: "mm", format: [pdfWidth, pdfHeight] });
+              pdf.addImage(imgData, "JPEG", 0, 0, pdfWidth, pdfHeight);
+              const filename = `${(metadata.client_name || "report").replace(/\s+/g, "-")}-${(metadata.month_label || "report").replace(/\s+/g, "-")}.pdf`;
+              pdf.save(filename);
+            }
+            document.body.removeChild(printFrame);
+            setStatus("PDF downloaded!");
+          } catch {
+            setStatus("PDF generation failed");
+          }
+          setTimeout(() => setStatus(""), 3000);
         }}
           className="flex items-center gap-1.5 px-3 py-2 bg-[#313131] rounded-lg text-xs font-medium hover:bg-[#444] transition-colors border border-[#444]">
-          <Download size={14} /> Download
+          <Download size={14} /> PDF
         </button>
         <button onClick={() => setShowSendPanel(!showSendPanel)}
           className="flex items-center gap-1.5 px-4 py-2 bg-[#FF0100] rounded-lg text-xs font-semibold text-white hover:bg-[#FF0100]/80 transition-colors">
